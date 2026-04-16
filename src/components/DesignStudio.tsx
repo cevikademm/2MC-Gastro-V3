@@ -128,6 +128,70 @@ function distancePP(a: Point, b: Point): number {
   return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
 }
 
+/* ─── Signed area: >0 CW in SVG space (y-down), <0 CCW ─── */
+function signedArea(pts: Point[]): number {
+  let s = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const j = (i + 1) % pts.length;
+    s += pts[i].x * pts[j].y - pts[j].x * pts[i].y;
+  }
+  return s / 2;
+}
+
+/* ─── Offset polygon inward by `d` cm. Handles convex/concave via bisector miter. ─── */
+function offsetPolygonInward(pts: Point[], d: number): Point[] {
+  const n = pts.length;
+  if (n < 3 || d <= 0) return pts.slice();
+  // In SVG (y-down): CW winding => signed area > 0, inward normal is LEFT of edge dir.
+  // CCW winding => signed area < 0, inward normal is RIGHT. We flip sign accordingly.
+  const sign = signedArea(pts) > 0 ? 1 : -1;
+  const out: Point[] = [];
+  for (let i = 0; i < n; i++) {
+    const prev = pts[(i - 1 + n) % n];
+    const curr = pts[i];
+    const next = pts[(i + 1) % n];
+    const e1x = curr.x - prev.x, e1y = curr.y - prev.y;
+    const e2x = next.x - curr.x, e2y = next.y - curr.y;
+    const l1 = Math.hypot(e1x, e1y) || 1;
+    const l2 = Math.hypot(e2x, e2y) || 1;
+    // Left normals in SVG (y-down)
+    const n1x = -e1y / l1, n1y = e1x / l1;
+    const n2x = -e2y / l2, n2y = e2x / l2;
+    let bx = n1x + n2x, by = n1y + n2y;
+    const bl = Math.hypot(bx, by);
+    let scale = 1;
+    if (bl < 1e-6) {
+      bx = n1x; by = n1y;
+    } else {
+      const dot = n1x * n2x + n1y * n2y;
+      scale = 1 / Math.sqrt(Math.max(0.02, (1 + dot) / 2));
+      bx /= bl; by /= bl;
+    }
+    out.push({ x: curr.x + bx * d * scale * sign, y: curr.y + by * d * scale * sign });
+  }
+  return out;
+}
+
+/* ─── AutoCAD-style rendering configuration ─── */
+const CAD = {
+  wallThicknessCm: 15,              // 15 cm wall thickness (masonry standard)
+  wallOuterStroke: '#0f172a',       // near-black outer wall line
+  wallInnerStroke: '#0f172a',       // near-black inner wall line
+  wallOuterWidth: 2.2,              // outer line weight
+  wallInnerWidth: 1.2,              // inner line weight
+  hatchColor: '#334155',            // wall hatch line color
+  dimColor: '#0f172a',              // dimension text & lines
+  dimOffsetCm: 55,                  // distance of dim line from wall
+  dimExtOvershootCm: 8,             // extension line overshoot past dim line
+  dimExtGapCm: 6,                   // gap from wall to start of extension line
+  gridMinorColor: '#e2e8f0',        // subtle minor grid
+  gridMajorColor: '#cbd5e1',        // bold major grid (1m)
+  gridMinorEvery: 10,               // 10 cm
+  gridMajorEvery: 100,              // 1 m
+  bgColor: '#fafafa',               // near-white engineering paper
+  titleColor: '#0f172a',
+};
+
 /** Returns { wallIndex, t, dist } for the closest wall segment to point p */
 function nearestWall(p: Point, polygon: Point[]): { wallIndex: number; t: number; dist: number; foot: Point } {
   let best = { wallIndex: 0, t: 0, dist: Infinity, foot: p };
@@ -1125,11 +1189,14 @@ export default function DesignStudio({ manualMode = false }: { manualMode?: bool
         <div ref={canvasWrapRef} className="flex-1 overflow-hidden relative flex flex-col">
         <div
           ref={canvasRef}
-          className="flex-1 overflow-hidden relative bg-white"
+          className="flex-1 overflow-hidden relative"
           style={{
             cursor: isDrawingRoom ? 'crosshair' : activeTool === 'pan' || isPanning ? 'grab' : draggingVertex !== null ? 'move' : 'default',
-            backgroundImage: 'radial-gradient(circle, #c4c6cf 1px, transparent 1px)',
-            backgroundSize: '20px 20px',
+            background: manualMode ? CAD.bgColor : '#ffffff',
+            backgroundImage: manualMode
+              ? 'none'
+              : 'radial-gradient(circle, #c4c6cf 1px, transparent 1px)',
+            backgroundSize: manualMode ? 'auto' : '20px 20px',
           }}
           onMouseDown={handleCanvasMouseDown}
           onMouseMove={handleCanvasMouseMove}
@@ -1186,30 +1253,147 @@ export default function DesignStudio({ manualMode = false }: { manualMode?: bool
           <div style={{ transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoom})`, transformOrigin: '0 0', position: 'absolute', willChange: 'transform' }}>
             <svg width={renderSVGWidth} height={renderSVGHeight} className="overflow-visible">
 
+              {/* Global SVG patterns (grid + wall hatch) */}
+              <defs>
+                {/* Minor + major grid (AutoCAD engineering style) */}
+                <pattern id="cadMinorGrid" width={CAD.gridMinorEvery} height={CAD.gridMinorEvery} patternUnits="userSpaceOnUse">
+                  <path d={`M ${CAD.gridMinorEvery} 0 L 0 0 0 ${CAD.gridMinorEvery}`} fill="none" stroke={CAD.gridMinorColor} strokeWidth="0.4" />
+                </pattern>
+                <pattern id="cadMajorGrid" width={CAD.gridMajorEvery} height={CAD.gridMajorEvery} patternUnits="userSpaceOnUse">
+                  <rect width={CAD.gridMajorEvery} height={CAD.gridMajorEvery} fill="url(#cadMinorGrid)" />
+                  <path d={`M ${CAD.gridMajorEvery} 0 L 0 0 0 ${CAD.gridMajorEvery}`} fill="none" stroke={CAD.gridMajorColor} strokeWidth="0.9" />
+                </pattern>
+                {/* Legacy grid (non-manual) */}
+                <pattern id="sGrid" width={gridSize} height={gridSize} patternUnits="userSpaceOnUse">
+                  <path d={`M ${gridSize} 0 L 0 0 0 ${gridSize}`} fill="none" stroke="#e2e8f0" strokeWidth="0.5" />
+                </pattern>
+                <pattern id="bGrid" width={gridSize * 10} height={gridSize * 10} patternUnits="userSpaceOnUse">
+                  <rect width={gridSize * 10} height={gridSize * 10} fill="url(#sGrid)" />
+                  <path d={`M ${gridSize * 10} 0 L 0 0 0 ${gridSize * 10}`} fill="none" stroke="#cbd5e1" strokeWidth="1" />
+                </pattern>
+                {/* Wall hatch pattern (45° diagonal, masonry style) */}
+                <pattern id="wallHatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+                  <line x1="0" y1="0" x2="0" y2="6" stroke={CAD.hatchColor} strokeWidth="0.6" />
+                </pattern>
+                {/* Dimension arrow/tick markers */}
+                <marker id="dimTick" viewBox="-5 -5 10 10" refX="0" refY="0" markerWidth="10" markerHeight="10" orient="auto-start-reverse">
+                  <line x1="-3" y1="-3" x2="3" y2="3" stroke={CAD.dimColor} strokeWidth="1.2" />
+                </marker>
+              </defs>
+
               {/* Grid */}
               {showGrid && (
-                <>
-                  <defs>
-                    <pattern id="sGrid" width={gridSize} height={gridSize} patternUnits="userSpaceOnUse">
-                      <path d={`M ${gridSize} 0 L 0 0 0 ${gridSize}`} fill="none" stroke="#e2e8f0" strokeWidth="0.5" />
-                    </pattern>
-                    <pattern id="bGrid" width={gridSize * 10} height={gridSize * 10} patternUnits="userSpaceOnUse">
-                      <rect width={gridSize * 10} height={gridSize * 10} fill="url(#sGrid)" />
-                      <path d={`M ${gridSize * 10} 0 L 0 0 0 ${gridSize * 10}`} fill="none" stroke="#cbd5e1" strokeWidth="1" />
-                    </pattern>
-                  </defs>
+                manualMode ? (
+                  <>
+                    <rect x={-500} y={-500} width={renderSVGWidth + 1000} height={renderSVGHeight + 1000} fill="url(#cadMajorGrid)" />
+                    {/* X / Y origin axes */}
+                    <line x1={-500} y1={0} x2={renderSVGWidth + 500} y2={0} stroke="#94a3b8" strokeWidth="0.8" strokeDasharray="4 3" />
+                    <line x1={0} y1={-500} x2={0} y2={renderSVGHeight + 500} stroke="#94a3b8" strokeWidth="0.8" strokeDasharray="4 3" />
+                    {/* Origin marker */}
+                    <g>
+                      <circle cx={0} cy={0} r={3} fill="#ef4444" />
+                      <text x={6} y={-6} fontSize={10} fontFamily="monospace" fontWeight="bold" fill="#ef4444">0,0</text>
+                    </g>
+                  </>
+                ) : (
                   <rect x={-500} y={-500} width={renderSVGWidth + 1000} height={renderSVGHeight + 1000} fill="url(#bGrid)" />
-                </>
+                )
               )}
 
               {/* Room shape — architectural polygon */}
               {roomPolygon.length >= 3 && (
                 <>
-                  <path d={polygonSVGPath(roomPolygon)} fill="#ffffff" stroke="#334155" strokeWidth={3} className="room-floor" />
-                  {/* Wall dimension labels */}
-                  {roomPolygon.map((p, i) => {
+                  {manualMode ? (() => {
+                    const innerPoly = offsetPolygonInward(roomPolygon, CAD.wallThicknessCm);
+                    const outerPath = polygonSVGPath(roomPolygon);
+                    const innerPath = polygonSVGPath(innerPoly);
+                    const sign = signedArea(roomPolygon) > 0 ? 1 : -1;
+                    return (
+                      <g className="cad-walls">
+                        {/* Interior floor (inside the inner polygon) */}
+                        <path d={innerPath} fill="#ffffff" stroke="none" />
+                        {/* Wall band = outer polygon minus inner polygon (even-odd fill) */}
+                        <path
+                          d={`${outerPath} ${innerPath}`}
+                          fill="url(#wallHatch)"
+                          stroke="none"
+                          fillRule="evenodd"
+                        />
+                        {/* Outer wall line (thicker) */}
+                        <path d={outerPath} fill="none" stroke={CAD.wallOuterStroke} strokeWidth={CAD.wallOuterWidth} strokeLinejoin="miter" />
+                        {/* Inner wall line (thinner) */}
+                        <path d={innerPath} fill="none" stroke={CAD.wallInnerStroke} strokeWidth={CAD.wallInnerWidth} strokeLinejoin="miter" />
+                        {/* External architectural dimensions (extension lines + dim line + tick marks + text) */}
+                        {roomPolygon.map((p, i) => {
+                          const next = roomPolygon[(i + 1) % roomPolygon.length];
+                          const dx = next.x - p.x;
+                          const dy = next.y - p.y;
+                          const len = Math.hypot(dx, dy);
+                          if (len < 30) return null;
+                          const ux = dx / len, uy = dy / len;
+                          // Outward normal (opposite of inward)
+                          const nx = -(-uy) * sign;
+                          const ny = -(ux) * sign;
+                          const off = CAD.dimOffsetCm;
+                          const gap = CAD.dimExtGapCm;
+                          const over = CAD.dimExtOvershootCm;
+                          // Extension line start points (offset slightly away from wall to not overlap)
+                          const a1 = { x: p.x + nx * gap, y: p.y + ny * gap };
+                          const a2 = { x: p.x + nx * (off + over), y: p.y + ny * (off + over) };
+                          const b1 = { x: next.x + nx * gap, y: next.y + ny * gap };
+                          const b2 = { x: next.x + nx * (off + over), y: next.y + ny * (off + over) };
+                          // Dimension line endpoints
+                          const da = { x: p.x + nx * off, y: p.y + ny * off };
+                          const db = { x: next.x + nx * off, y: next.y + ny * off };
+                          // Mid-point for text
+                          const mx = (da.x + db.x) / 2;
+                          const my = (da.y + db.y) / 2;
+                          const angle = Math.atan2(dy, dx) * 180 / Math.PI;
+                          const textAngle = (angle > 90 || angle < -90) ? angle + 180 : angle;
+                          const lenM = (len / 100).toFixed(2);
+                          return (
+                            <g key={`dim-${i}`} className="cad-dim" style={{ pointerEvents: 'none' }}>
+                              {/* Extension lines */}
+                              <line x1={a1.x} y1={a1.y} x2={a2.x} y2={a2.y} stroke={CAD.dimColor} strokeWidth="0.6" />
+                              <line x1={b1.x} y1={b1.y} x2={b2.x} y2={b2.y} stroke={CAD.dimColor} strokeWidth="0.6" />
+                              {/* Dimension line */}
+                              <line x1={da.x} y1={da.y} x2={db.x} y2={db.y} stroke={CAD.dimColor} strokeWidth="0.9" />
+                              {/* Architectural 45° tick marks at endpoints */}
+                              {(() => {
+                                const tick = 5;
+                                const tx = (ux + nx) * tick;
+                                const ty = (uy + ny) * tick;
+                                return (
+                                  <>
+                                    <line x1={da.x - tx} y1={da.y - ty} x2={da.x + tx} y2={da.y + ty} stroke={CAD.dimColor} strokeWidth="1.2" />
+                                    <line x1={db.x - tx} y1={db.y - ty} x2={db.x + tx} y2={db.y + ty} stroke={CAD.dimColor} strokeWidth="1.2" />
+                                  </>
+                                );
+                              })()}
+                              {/* Dimension text (above the line, architectural convention) */}
+                              <g transform={`translate(${mx}, ${my}) rotate(${textAngle})`}>
+                                <rect x={-22} y={-10} width={44} height={13} rx={1} fill={CAD.bgColor} stroke="none" />
+                                <text textAnchor="middle" dominantBaseline="central" y={-3.5} fontSize={9} fontWeight="bold" fontFamily="'Consolas','Courier New',monospace" fill={CAD.dimColor}>
+                                  {lenM} m
+                                </text>
+                              </g>
+                            </g>
+                          );
+                        })}
+                      </g>
+                    );
+                  })() : (
+                    <path d={polygonSVGPath(roomPolygon)} fill="#ffffff" stroke="#334155" strokeWidth={3} className="room-floor" />
+                  )}
+                  {/* Wall dimension labels (non-manual mode only; manualMode has its own CAD dims) */}
+                  {!manualMode && roomPolygon.map((p, i) => {
                     const next = roomPolygon[(i + 1) % roomPolygon.length];
                     return <WallLabel key={`wall-${i}`} a={p} b={next} zoom={zoom} wallIndex={i} onLengthChange={handleWallLengthChange} />;
+                  })}
+                  {/* Editable wall length pill (manual mode) — small clickable pill near dim line */}
+                  {manualMode && roomPolygon.map((p, i) => {
+                    const next = roomPolygon[(i + 1) % roomPolygon.length];
+                    return <WallLabel key={`wlabel-${i}`} a={p} b={next} zoom={zoom} wallIndex={i} onLengthChange={handleWallLengthChange} />;
                   })}
                   {/* Midpoint "+" handles to insert new vertex */}
                   {!isDrawingRoom && roomPolygon.map((p, i) => {
@@ -1334,22 +1518,88 @@ export default function DesignStudio({ manualMode = false }: { manualMode?: bool
                 );
               })}
 
-              {/* ─── Scale Ruler ─── */}
+              {/* ─── Scale Ruler (AutoCAD graphic scale bar) ─── */}
               {(() => {
-                // 1m = 100cm, göster: 1m çizgisi
-                const rulerX = roomShape === 'polygon' && roomPolygon.length >= 3 ? bounds.minX : 0;
-                const rulerY = (roomShape === 'polygon' && roomPolygon.length >= 3 ? bounds.maxY : roomHeightCm) + 20;
-                const rulerLen = 100; // 100cm = 1m
+                const hasPoly = roomShape === 'polygon' && roomPolygon.length >= 3;
+                const rulerX = hasPoly ? bounds.minX : 0;
+                // In manualMode push ruler below the dimension lines
+                const rulerY = (hasPoly ? bounds.maxY : roomHeightCm) + (manualMode ? (CAD.dimOffsetCm + 40) : 20);
+                if (manualMode) {
+                  // Segmented 0-1-2-3-4-5 m graphic scale: alternating black/white blocks
+                  const seg = 100; // 1 m
+                  const segs = 5;
+                  const h = 6;
+                  return (
+                    <g className="cad-scalebar">
+                      {Array.from({ length: segs }).map((_, i) => (
+                        <rect
+                          key={`sb-${i}`}
+                          x={rulerX + i * seg}
+                          y={rulerY - h / 2}
+                          width={seg}
+                          height={h}
+                          fill={i % 2 === 0 ? CAD.dimColor : '#ffffff'}
+                          stroke={CAD.dimColor}
+                          strokeWidth="0.7"
+                        />
+                      ))}
+                      {/* Tick labels 0..5 m */}
+                      {Array.from({ length: segs + 1 }).map((_, i) => (
+                        <g key={`sbl-${i}`}>
+                          <line x1={rulerX + i * seg} y1={rulerY + h / 2} x2={rulerX + i * seg} y2={rulerY + h / 2 + 4} stroke={CAD.dimColor} strokeWidth="0.7" />
+                          <text x={rulerX + i * seg} y={rulerY + h / 2 + 14} textAnchor="middle" fontSize={9} fontFamily="'Consolas','Courier New',monospace" fontWeight="bold" fill={CAD.dimColor}>{i}</text>
+                        </g>
+                      ))}
+                      <text x={rulerX + segs * seg + 8} y={rulerY + 3} fontSize={10} fontFamily="'Consolas','Courier New',monospace" fontWeight="bold" fill={CAD.dimColor}>m</text>
+                      <text x={rulerX} y={rulerY - h / 2 - 6} fontSize={9} fontFamily="'Consolas','Courier New',monospace" fill={CAD.dimColor}>GRAFİK ÖLÇEK 1:100</text>
+                    </g>
+                  );
+                }
+                const rulerLen = 100;
                 return (
                   <g>
-                    {/* 1m ruler line */}
                     <line x1={rulerX} y1={rulerY} x2={rulerX + rulerLen} y2={rulerY} stroke="#64748b" strokeWidth={2 / zoom} />
                     <line x1={rulerX} y1={rulerY - 5 / zoom} x2={rulerX} y2={rulerY + 5 / zoom} stroke="#64748b" strokeWidth={2 / zoom} />
                     <line x1={rulerX + rulerLen} y1={rulerY - 5 / zoom} x2={rulerX + rulerLen} y2={rulerY + 5 / zoom} stroke="#64748b" strokeWidth={2 / zoom} />
                     <text x={rulerX + rulerLen / 2} y={rulerY + 14 / zoom} textAnchor="middle" fontSize={10 / zoom} fontWeight="bold" fill="#64748b" fontFamily="monospace">1 m</text>
-                    {/* 50cm half-marker */}
                     <line x1={rulerX + 50} y1={rulerY - 3 / zoom} x2={rulerX + 50} y2={rulerY + 3 / zoom} stroke="#94a3b8" strokeWidth={1 / zoom} />
                     <text x={rulerX + 50} y={rulerY + 14 / zoom} textAnchor="middle" fontSize={8 / zoom} fill="#94a3b8" fontFamily="monospace">50cm</text>
+                  </g>
+                );
+              })()}
+
+              {/* ─── North arrow (manualMode only) ─── */}
+              {manualMode && roomPolygon.length >= 3 && (() => {
+                const nx0 = bounds.maxX + CAD.dimOffsetCm + 40;
+                const ny0 = bounds.minY + 10;
+                return (
+                  <g className="cad-north" transform={`translate(${nx0}, ${ny0})`}>
+                    <circle cx={0} cy={0} r={22} fill="#ffffff" stroke={CAD.dimColor} strokeWidth="0.9" />
+                    {/* North triangle (filled) */}
+                    <polygon points="0,-18 4,0 0,-4 -4,0" fill={CAD.dimColor} />
+                    {/* South triangle (outline) */}
+                    <polygon points="0,18 4,0 0,4 -4,0" fill="#ffffff" stroke={CAD.dimColor} strokeWidth="0.8" />
+                    <text x={0} y={-26} textAnchor="middle" fontSize={10} fontFamily="'Consolas','Courier New',monospace" fontWeight="bold" fill={CAD.dimColor}>K</text>
+                  </g>
+                );
+              })()}
+
+              {/* ─── Mini title block (manualMode only) ─── */}
+              {manualMode && roomPolygon.length >= 3 && (() => {
+                const tbX = bounds.maxX + CAD.dimOffsetCm + 10;
+                const tbY = bounds.maxY - 60;
+                return (
+                  <g className="cad-titleblock" transform={`translate(${tbX}, ${tbY})`}>
+                    <rect x={0} y={0} width={160} height={60} fill="#ffffff" stroke={CAD.dimColor} strokeWidth="0.9" />
+                    <line x1={0} y1={18} x2={160} y2={18} stroke={CAD.dimColor} strokeWidth="0.6" />
+                    <line x1={0} y1={36} x2={160} y2={36} stroke={CAD.dimColor} strokeWidth="0.6" />
+                    <line x1={60} y1={18} x2={60} y2={60} stroke={CAD.dimColor} strokeWidth="0.6" />
+                    <text x={80} y={12} textAnchor="middle" fontSize={10} fontFamily="'Consolas','Courier New',monospace" fontWeight="bold" fill={CAD.dimColor}>2MC GASTRO</text>
+                    <text x={4} y={30} fontSize={8} fontFamily="'Consolas','Courier New',monospace" fill={CAD.dimColor}>ALAN</text>
+                    <text x={64} y={30} fontSize={8} fontFamily="'Consolas','Courier New',monospace" fontWeight="bold" fill={CAD.dimColor}>{roomAreaM2} m²</text>
+                    <text x={4} y={48} fontSize={8} fontFamily="'Consolas','Courier New',monospace" fill={CAD.dimColor}>ÇEVRE</text>
+                    <text x={64} y={48} fontSize={8} fontFamily="'Consolas','Courier New',monospace" fontWeight="bold" fill={CAD.dimColor}>{roomPerimeterM} m</text>
+                    <text x={4} y={58} fontSize={7} fontFamily="'Consolas','Courier New',monospace" fill="#64748b">ÖLÇEK 1:100</text>
                   </g>
                 );
               })()}
@@ -1497,30 +1747,54 @@ export default function DesignStudio({ manualMode = false }: { manualMode?: bool
         </div>
 
         <div className="flex-1 overflow-y-auto">
-          {rightPanelTab === 'room' && (
+          {rightPanelTab === 'room' && (() => {
+            const roomM2Num = Number(roomAreaM2);
+            const eqM2Num = Number(equipmentAreaM2);
+            const occupancyPct = roomM2Num > 0 ? Math.min(100, Math.round((eqM2Num / roomM2Num) * 100)) : 0;
+            const occupancyColor = occupancyPct < 40 ? 'text-emerald-600' : occupancyPct < 70 ? 'text-amber-600' : 'text-red-600';
+            const occupancyBg = occupancyPct < 40 ? 'bg-emerald-500' : occupancyPct < 70 ? 'bg-amber-500' : 'bg-red-500';
+            return (
             <div className="p-3 space-y-4">
-              {/* Room stats */}
-              <div className="bg-slate-50 rounded-xl p-3 space-y-2 border border-slate-200">
-                <h4 className="text-[10px] font-black uppercase text-slate-500 tracking-wider">Alan Bilgileri</h4>
+              {/* ─── Oda Ölçüleri (4-up grid) ─── */}
+              <div className="bg-gradient-to-br from-slate-50 to-white rounded-xl p-3 space-y-2 border border-slate-200 shadow-sm">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-[10px] font-black uppercase text-slate-500 tracking-wider flex items-center gap-1"><Ruler size={11} className="text-primary" /> Oda Ölçüleri</h4>
+                  {roomPolygon.length >= 3 && <span className="text-[9px] font-bold text-slate-400">{roomPolygon.length} köşe</span>}
+                </div>
                 <div className="grid grid-cols-2 gap-2">
                   <div className="bg-white rounded-lg p-2.5 text-center border border-slate-200">
                     <div className="text-[9px] font-bold text-slate-400 uppercase">Alan</div>
-                    <div className="text-lg font-black text-primary">{roomAreaM2}<span className="text-[10px] ml-0.5">m²</span></div>
+                    <div className="text-lg font-black text-primary leading-tight">{roomAreaM2}<span className="text-[10px] ml-0.5">m²</span></div>
                   </div>
                   <div className="bg-white rounded-lg p-2.5 text-center border border-slate-200">
                     <div className="text-[9px] font-bold text-slate-400 uppercase">Çevre</div>
-                    <div className="text-lg font-black text-slate-700">{roomPerimeterM}<span className="text-[10px] ml-0.5">m</span></div>
+                    <div className="text-lg font-black text-slate-700 leading-tight">{roomPerimeterM}<span className="text-[10px] ml-0.5">m</span></div>
+                  </div>
+                  <div className="bg-white rounded-lg p-2.5 text-center border border-slate-200">
+                    <div className="text-[9px] font-bold text-slate-400 uppercase">Ekipman</div>
+                    <div className="text-lg font-black text-slate-700 leading-tight">{equipmentAreaM2}<span className="text-[10px] ml-0.5">m²</span></div>
+                  </div>
+                  <div className="bg-white rounded-lg p-2.5 text-center border border-slate-200">
+                    <div className="text-[9px] font-bold text-slate-400 uppercase">Doluluk</div>
+                    <div className={`text-lg font-black leading-tight ${occupancyColor}`}>{occupancyPct}<span className="text-[10px] ml-0.5">%</span></div>
                   </div>
                 </div>
-                {roomPolygon.length >= 3 && (
-                  <div className="text-[9px] text-slate-400 text-center">{roomPolygon.length} köşe nokta</div>
-                )}
+                {/* Doluluk progress bar */}
+                <div className="pt-1">
+                  <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
+                    <div className={`h-full rounded-full transition-all duration-300 ${occupancyBg}`} style={{ width: `${occupancyPct}%` }} />
+                  </div>
+                  <div className="flex justify-between text-[8px] text-slate-400 mt-0.5 font-mono">
+                    <span>Boş: {Math.max(0, (roomM2Num - eqM2Num)).toFixed(1)} m²</span>
+                    <span>{placedItems.length} ekipman</span>
+                  </div>
+                </div>
                 <button onClick={startDrawingRoom} className="w-full py-1.5 text-[10px] font-bold text-emerald-600 bg-emerald-50 hover:bg-emerald-100 rounded-lg flex items-center justify-center gap-1 transition-all">
                   <RotateCcw size={11} /> {roomPolygon.length >= 3 ? 'Yeniden Çiz' : 'Çizmeye Başla'}
                 </button>
               </div>
 
-              {/* Room properties */}
+              {/* ─── Mimari Özellikler ─── */}
               <div className="space-y-3">
                 <h4 className="text-[10px] font-black uppercase text-slate-500 tracking-wider">Mimari Özellikler</h4>
 
@@ -1589,7 +1863,7 @@ export default function DesignStudio({ manualMode = false }: { manualMode?: bool
                 </div>
               </div>
 
-              {/* Wall openings */}
+              {/* ─── Açıklıklar ─── */}
               <div className="space-y-2 border-t border-slate-200 pt-3">
                 <h4 className="text-[10px] font-black uppercase text-slate-500 tracking-wider">Açıklıklar (Kapı / Pencere)</h4>
                 {roomPolygon.length >= 3 && (
@@ -1621,7 +1895,150 @@ export default function DesignStudio({ manualMode = false }: { manualMode?: bool
                 )}
               </div>
 
-              {/* m² price */}
+              {/* ─── Yerleştirilen Ekipmanlar (placed list with area %) ─── */}
+              {placedItems.length > 0 && (
+                <div className="space-y-2 border-t border-slate-200 pt-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-[10px] font-black uppercase text-slate-500 tracking-wider">Yerleştirilenler</h4>
+                    <span className="text-[9px] font-bold text-slate-400">{placedItems.length} adet</span>
+                  </div>
+                  <div className="space-y-1 max-h-48 overflow-y-auto pr-1">
+                    {placedItems.map((it) => {
+                      const itM2 = (it.width * it.height) / 10000;
+                      const pctOfRoom = roomM2Num > 0 ? (itM2 / roomM2Num) * 100 : 0;
+                      const borderColor = CATEGORY_BORDERS[it.category] || '#cbd5e1';
+                      const isSel = it.id === selectedId;
+                      return (
+                        <div key={it.id}
+                          onClick={() => setSelectedId(it.id)}
+                          className={`group flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer border transition-all ${isSel ? 'bg-primary/5 border-primary/40' : 'bg-white hover:bg-slate-50 border-slate-200'}`}>
+                          <div className="w-1.5 h-8 rounded-full shrink-0" style={{ background: borderColor }} />
+                          <div className="flex-1 min-w-0">
+                            <div className="text-[10px] font-bold text-slate-700 truncate">{it.name}</div>
+                            <div className="text-[9px] text-slate-400 font-mono flex items-center gap-2">
+                              <span>{it.width}×{it.height}cm</span>
+                              <span>·</span>
+                              <span>{itM2.toFixed(2)}m²</span>
+                              <span className="text-primary font-bold">·</span>
+                              <span className="text-primary font-bold">%{pctOfRoom.toFixed(1)}</span>
+                            </div>
+                          </div>
+                          <button onClick={(e) => { e.stopPropagation(); setPlacedItems(prev => prev.filter(p => p.id !== it.id)); if (selectedId === it.id) setSelectedId(null); }}
+                            className="shrink-0 p-1 rounded text-red-300 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition-all">
+                            <Trash2 size={10} />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* ─── Ekipman Kataloğu (inline, manualMode için) ─── */}
+              <div className="space-y-2 border-t border-slate-200 pt-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-[10px] font-black uppercase text-slate-500 tracking-wider flex items-center gap-1"><Package size={11} className="text-primary" /> Ekipman Kataloğu</h4>
+                  <span className="text-[8px] text-slate-400 font-mono">{catalogItems.length < 60 ? `${catalogItems.length} ürün` : '60+'}</span>
+                </div>
+
+                {/* Search */}
+                <div className="relative">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" size={13} />
+                  <input type="text" value={catalogSearch} onChange={(e) => setCatalogSearch(e.target.value)}
+                    placeholder="Ürün ara..."
+                    className="w-full pl-8 pr-8 py-1.5 text-xs border border-slate-200 rounded-lg focus:ring-2 focus:ring-primary outline-none" />
+                  {catalogSearch && (
+                    <button onClick={() => setCatalogSearch('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-primary"><X size={11} /></button>
+                  )}
+                </div>
+
+                {/* Filters */}
+                <div className="flex items-center gap-1.5">
+                  <button onClick={() => setShowFavoritesOnly(!showFavoritesOnly)}
+                    className={`flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-bold transition-all ${showFavoritesOnly ? 'bg-pink-50 text-pink-600 border border-pink-200' : 'bg-slate-50 text-slate-500 hover:bg-slate-100'}`}
+                    title="Favoriler">
+                    <Heart size={10} fill={showFavoritesOnly ? 'currentColor' : 'none'} />
+                    {equipmentStore.favorites.length > 0 && <span className="text-[8px]">{equipmentStore.favorites.length}</span>}
+                  </button>
+                  <select value={catalogCategory} onChange={(e) => setCatalogCategory(e.target.value)}
+                    className="flex-1 text-[10px] font-bold px-2 py-1 border border-slate-200 rounded-md bg-white text-slate-600 outline-none">
+                    <option value="">Tüm Kategoriler</option>
+                    {CATEGORIES.filter(c => c.count > 0).map(c => <option key={c.id} value={c.id}>{c.name} ({c.count})</option>)}
+                  </select>
+                </div>
+
+                {roomPolygon.length < 3 && (
+                  <div className="text-[9px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
+                    ⚠️ Önce odayı çizin, sonra ürün ekleyin.
+                  </div>
+                )}
+
+                {/* Product grid — scale-accurate, drag or click to add */}
+                <div className="grid grid-cols-2 gap-1.5 max-h-96 overflow-y-auto pr-1">
+                  {catalogItems.map((item) => {
+                    const isFav = equipmentStore.favorites.includes(item.id);
+                    // Product size in cm (equipment items store l/w in mm)
+                    const prodWcm = Math.round(item.l / 10);
+                    const prodHcm = Math.round(item.w / 10);
+                    const prodM2 = (prodWcm * prodHcm) / 10000;
+                    const prodPctOfRoom = roomM2Num > 0 ? (prodM2 / roomM2Num) * 100 : 0;
+                    const canAdd = roomPolygon.length >= 3;
+                    return (
+                      <div key={item.id}
+                        draggable={canAdd}
+                        onDragStart={(e) => { if (!canAdd) { e.preventDefault(); return; } setTrayDragItem(item); e.dataTransfer.effectAllowed = 'copy'; }}
+                        className={`bg-white rounded-lg border border-slate-200 ${canAdd ? 'hover:border-primary/40 cursor-grab active:cursor-grabbing' : 'opacity-60 cursor-not-allowed'} transition-all group relative overflow-hidden`}>
+                        {/* Fav button */}
+                        <button onClick={(e) => { e.stopPropagation(); equipmentStore.toggleFavorite(item.id); }} className="absolute top-1 right-1 z-10 p-0.5 rounded-full bg-white/90 shadow-sm">
+                          <Heart size={9} fill={isFav ? '#ec4899' : 'none'} className={isFav ? 'text-pink-500' : 'text-slate-300'} />
+                        </button>
+                        {/* Quick-add button */}
+                        <button onClick={(e) => { e.stopPropagation(); if (canAdd) addEquipmentToFloorPlan(item); }}
+                          disabled={!canAdd}
+                          className="absolute top-1 left-1 z-10 p-0.5 rounded-full bg-primary text-white shadow-sm opacity-0 group-hover:opacity-100 transition-opacity disabled:opacity-0"
+                          title="Mutfağa ekle">
+                          <Plus size={10} />
+                        </button>
+                        {/* Image */}
+                        <div className="w-full aspect-[4/3] bg-slate-50 flex items-center justify-center p-1">
+                          <ProductImage src={item.img} alt={item.name} className="w-full h-full" />
+                        </div>
+                        {/* Meta */}
+                        <div className="p-1.5">
+                          <div className="text-[9px] font-bold text-slate-700 leading-tight line-clamp-2 min-h-[24px]">{item.name}</div>
+                          {/* Size + m² + % of kitchen */}
+                          <div className="mt-1 flex items-center justify-between text-[8px] font-mono">
+                            <span className="text-slate-500">{prodWcm}×{prodHcm}cm</span>
+                            <span className="text-slate-700 font-bold">{prodM2.toFixed(2)}m²</span>
+                          </div>
+                          {/* Proportional bar: shows how much of kitchen this one unit fills */}
+                          {canAdd && (
+                            <div className="mt-1">
+                              <div className="h-1 w-full bg-slate-100 rounded-full overflow-hidden">
+                                <div className="h-full bg-primary/70 rounded-full" style={{ width: `${Math.min(100, prodPctOfRoom)}%` }} />
+                              </div>
+                              <div className="text-[8px] text-primary font-bold mt-0.5">Mutfağın %{prodPctOfRoom.toFixed(1)}'i</div>
+                            </div>
+                          )}
+                          {/* Price + kW */}
+                          <div className="flex items-center justify-between mt-1">
+                            {item.kw > 0 ? <span className="flex items-center gap-0.5 text-[8px] text-amber-600"><Zap size={7} />{item.kw}kW</span> : <span />}
+                            {item.price > 0 && <span className="text-[9px] font-bold text-primary">{formatPrice(item.price)}</span>}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                {catalogItems.length === 0 && (
+                  <div className="text-center py-6 text-slate-400">
+                    <Package size={22} className="mx-auto mb-1 opacity-40" />
+                    <p className="text-[10px] font-medium">Ürün bulunamadı</p>
+                  </div>
+                )}
+              </div>
+
+              {/* ─── m² Birim Fiyatı ─── */}
               <div className="border-t border-slate-200 pt-3 space-y-1.5">
                 <label className="text-[9px] font-black uppercase text-slate-400">m² Birim Fiyatı (€)</label>
                 <input type="number" value={pricePerM2 || ''} onChange={e => setPricePerM2(Number(e.target.value))}
@@ -1629,18 +2046,19 @@ export default function DesignStudio({ manualMode = false }: { manualMode?: bool
                 {pricePerM2 > 0 && (
                   <div className="flex justify-between text-[10px] font-bold text-primary bg-primary/5 rounded-lg px-2.5 py-1.5">
                     <span>Tahmini Toplam</span>
-                    <span>€{(pricePerM2 * Number(roomAreaM2)).toLocaleString('de-DE', { minimumFractionDigits: 2 })}</span>
+                    <span>€{(pricePerM2 * roomM2Num).toLocaleString('de-DE', { minimumFractionDigits: 2 })}</span>
                   </div>
                 )}
               </div>
 
-              {/* PDF */}
+              {/* ─── PDF ─── */}
               <button onClick={exportFloorPlanPDF} disabled={pdfExporting}
                 className="w-full py-2.5 text-xs font-bold text-white bg-primary hover:bg-primary/90 rounded-xl flex items-center justify-center gap-2 transition-all disabled:opacity-60 shadow-sm">
                 {pdfExporting ? <><Loader2 size={14} className="animate-spin" /> Hazırlanıyor...</> : <><FileDown size={14} /> PDF İndir</>}
               </button>
             </div>
-          )}
+            );
+          })()}
 
           {rightPanelTab === 'catalog' && (
             <div className="p-3 space-y-3">

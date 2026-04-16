@@ -28,7 +28,7 @@ const NAV_ITEMS = [
 
 const SIDE_ITEMS = [
   { path: '/dashboard', labelKey: 'nav.dashboard', icon: LayoutDashboard, id: 'dashboard' },
-  { path: '/projects', labelKey: 'nav.project', icon: FolderOpen, id: 'projects' },
+  // Projeler sekmesi gizlendi — gösterge panelinde (Dashboard) zaten erişilebilir durumda.
   { path: '/manual', labelKey: 'nav.manual', icon: Pencil, id: 'manual' },
   { path: '/diamond', labelKey: 'Diamond', icon: Diamond, id: 'diamond', raw: true },
   { path: '/combisteel', labelKey: 'CombiSteel', icon: Box, id: 'combisteel', raw: true },
@@ -85,14 +85,14 @@ export default function Layout() {
   return (
     <div className="bg-surface font-body text-on-surface min-h-screen flex flex-col">
       {/* TopNavBar */}
-      <header className="bg-surface-container-lowest border-b border-outline-variant/10 flex justify-between items-center w-full px-4 md:px-6 py-3 h-14 md:h-16 fixed top-0 z-50">
+      <header className="bg-surface-container-lowest border-b border-outline-variant/10 flex justify-between items-center w-full px-4 md:px-6 py-3 h-16 md:h-20 fixed top-0 z-50">
         <div className="flex items-center gap-3 md:gap-8">
           {/* Hamburger sadece tablet'te (md) göster, mobilde alt nav var */}
           <button onClick={toggleMobileMenu} className="hidden md:flex lg:hidden p-2 text-slate-500 hover:bg-slate-100 rounded-full">
             {mobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
           </button>
           <Link to="/welcome" className="flex items-center gap-2">
-            <img src="/logo-2mc-gastro.jpeg" alt="2MC Gastro" className="h-9 object-contain" />
+            <img src="/logo-2mc-gastro.jpeg" alt="2MC Gastro" className="h-12 md:h-14 object-contain" />
           </Link>
           <nav className="hidden lg:flex gap-6 items-center">
             {NAV_ITEMS.map((item) => {
@@ -160,18 +160,29 @@ export default function Layout() {
             <Settings size={18} />
           </Link>
           {isAuthenticated && user ? (
-            <Link to="/profile" className="flex items-center gap-2 pl-2 pr-3 py-1.5 bg-primary/10 hover:bg-primary/20 rounded-full transition-colors">
-              {user.avatar ? (
-                <img src={user.avatar} alt="" className="w-7 h-7 rounded-full object-cover" />
-              ) : (
-                <div className="w-7 h-7 rounded-full bg-primary text-white flex items-center justify-center text-xs font-bold">
-                  {(user.fullName || user.email || '?')[0].toUpperCase()}
-                </div>
-              )}
-              <span className="text-sm font-semibold text-primary hidden sm:inline max-w-[100px] truncate">
-                {user.fullName || user.email}
-              </span>
-            </Link>
+            <>
+              <Link to="/profile" className="flex items-center gap-2 pl-2 pr-3 py-1.5 bg-primary/10 hover:bg-primary/20 rounded-full transition-colors">
+                {user.avatar ? (
+                  <img src={user.avatar} alt="" className="w-7 h-7 rounded-full object-cover" />
+                ) : (
+                  <div className="w-7 h-7 rounded-full bg-primary text-white flex items-center justify-center text-xs font-bold">
+                    {(user.fullName || user.email || '?')[0].toUpperCase()}
+                  </div>
+                )}
+                <span className="text-sm font-semibold text-primary hidden sm:inline max-w-[100px] truncate">
+                  {user.fullName || user.email}
+                </span>
+              </Link>
+              <button
+                onClick={handleLogout}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-bold text-error bg-error-container/60 hover:bg-error-container rounded-lg transition-colors"
+                title={t('nav.logout')}
+                aria-label={t('nav.logout')}
+              >
+                <LogOut size={16} />
+                <span className="hidden sm:inline">{t('nav.logout')}</span>
+              </button>
+            </>
           ) : (
             <Link
               to="/login"
@@ -248,7 +259,7 @@ export default function Layout() {
         </div>
       )}
 
-      <div className="flex flex-1 pt-14 md:pt-16">
+      <div className="flex flex-1 pt-16 md:pt-20">
         {/* Desktop Sidebar — lg ve üzeri */}
         <aside className="bg-surface-container-low fixed top-14 md:top-16 left-0 h-[calc(100vh-3.5rem)] md:h-[calc(100vh-4rem)] w-64 flex-col space-y-2 p-4 hidden lg:flex z-40 border-r border-outline-variant/10">
           <div className="mb-4 px-2">
